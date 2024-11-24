@@ -1,0 +1,449 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+    <title>Azure Maps with Calendar and ETA</title>
+    
+    <!-- Azure Maps CSS -->
+    <link href="https://atlas.microsoft.com/sdk/javascript/mapcontrol/3/atlas.min.css" rel="stylesheet" />
+    <script src="https://atlas.microsoft.com/sdk/javascript/mapcontrol/3/atlas.min.js"></script>
+<script src="https://atlas.microsoft.com/sdk/javascript/service/2/atlas-service.min.js"></script>
+    
+    
+    <!-- Bootstrap and FullCalendar CSS
+    <link rel='stylesheet' href='https://cdn.jsdelivr.net/npm/bootstrap@5.3.0-alpha3/dist/css/bootstrap.min.css'> -->
+    <link rel='stylesheet' href='https://cdn.jsdelivr.net/npm/@fullcalendar/core@4.2.0/main.min.css'> 
+    <link rel='stylesheet' href='https://cdn.jsdelivr.net/npm/@fullcalendar/daygrid@4.3.0/main.min.css'>
+    
+    <style>
+        body {
+            font-family: "Montserrat", sans-serif;
+            margin: 0;
+            padding: 0;
+            display: flex;
+        }
+
+        /* Sidebar container */
+        .sidebar-container {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 350px;
+            height: 100vh;
+            background-color: white;
+            padding: 20px;
+            box-shadow: 4px 0 6px rgba(0, 0, 0, 0.1);
+            overflow-y: auto;
+        }
+
+        /* Map container */
+        #myMap {
+            flex-grow: 1;
+            height: 100vh;
+            margin-left: 350px;
+        }
+
+        /* Route Legend container */
+        #routeLegend {
+            position: absolute;
+            top: 20px;
+            right: 20px;
+            background-color: white;
+            padding: 10px;
+            box-shadow: 0px 0px 10px rgba(0, 0, 0, 0.1);
+            border-radius: 5px;
+            width: 220px;
+        }
+
+        #routeLegend table {
+            width: 100%;
+        }
+
+        #routeLegend th, #routeLegend td {
+            padding: 5px;
+            text-align: left;
+        }
+
+        #routeLegend .colorBox {
+            width: 20px;
+            height: 10px;
+            display: inline-block;
+        }
+
+        /* Input fields */
+        input[type="text"], input[type="range"], input[type="button"] {
+            margin: 10px 0;
+            width: 100%;
+            padding: 5px;
+        }
+
+        /* Calendar */
+        #calendar {
+            margin-top: 20px;
+        }
+
+        /* Route Options Header */
+        .route-options-header {
+            margin-top: 20px;
+            font-weight: bold;
+        }
+
+        /* Voice Button */
+        #voiceBtn {
+            margin-top: 10px;
+            padding: 5px 10px;
+            background-color: #4CAF50;
+            color: white;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+        }
+
+        #voiceBtn:hover {
+            background-color: #45a049;
+        }
+
+        /* ETA Message */
+        #etaMessage {
+            margin-top: 10px;
+            font-weight: bold;
+        }
+    </style>
+</head>
+<body onload="getMap()">
+
+    <!-- Sidebar -->
+    <div class="sidebar-container"> 
+        <h3>Route Settings</h3>
+        <table>
+            <tr>
+                <td>Start:</td>
+                <td><input type="text" id="startTbx" placeholder="Eg: Seattle" /></td>
+            </tr>
+            <tr>
+                <td>End:</td>
+                <td><input type="text" id="endTbx" placeholder="Eg: Bellevue" /></td>
+            </tr>
+        </table>
+
+        <div class="route-options-header">Route Options</div>
+        <table>
+            <tr>
+                <td>Max deviation points:</td>
+                <td>
+                    <form oninput="dp.value=deviationPoints.value">
+                        <input type="range" id="deviationPoints" value="1" min="1" max="4" step="1" />
+                        <output name="dp" for="deviationPoints">1</output>
+                    </form>
+                </td>
+            </tr>
+        </table>
+
+        <input type="button" value="Calculate Route" onclick="calculateRoute()" />
+        <input type="button" id="voiceBtn" value="Start Voice Input" onclick="startVoiceRecognition()" />
+
+        <h3>Add Event</h3>
+        <form id="eventForm">
+            <input type="text" id="eventName" placeholder="Event Name" required>
+            <input type="datetime-local" id="eventTime" required>
+            <input type="submit" value="Add Event">
+        </form>
+
+        <!-- Calendar -->
+        <div id="calendar"></div>
+
+        <!-- ETA Message -->
+        <div id="etaMessage"></div>
+    </div>
+
+    <!-- Map -->
+    <div id="myMap"></div>
+
+    <!-- Route Legend -->
+    <div id="routeLegend">
+        <table>
+            <thead>
+                <tr>
+                    <th>Route</th>
+                    <th>Distance</th>
+                    <th>Time</th>
+                </tr>
+            </thead>
+            <tbody id="routeDetails">
+                <!-- Route details will be inserted here -->
+            </tbody>
+        </table>
+    </div>
+
+    <script>
+        var map, searchURL, routeURL, datasource, popup, calendar;
+        var aborter = atlas.service.Aborter.timeout(3000);
+        var currentEvent = 1; // Store current event for ETA comparison
+
+        function getMap() {
+            map = new atlas.Map('myMap', {
+                center: [72.88261, 19.07283],
+                zoom: 7,
+                view: 'Auto',
+                authOptions: {
+                    authType: 'subscriptionKey',
+                    subscriptionKey: '7twvooIrbj8zOFhEorkV66eV6JFpxQIKtH9IBh9RoYuIvOCxGie6JQQJ99AKACYeBjFF8uudAAAgAZMP3bOy'
+                }
+            });
+
+            var pipeline = atlas.service.MapsURL.newPipeline(new atlas.service.MapControlCredential(map));
+            searchURL = new atlas.service.SearchURL(pipeline, atlas.getDomain());
+            routeURL = new atlas.service.RouteURL(pipeline, atlas.getDomain());
+
+            map.events.add('ready', function () {
+                datasource = new atlas.source.DataSource();
+                map.sources.add(datasource);
+
+                var waypointLayer = new atlas.layer.BubbleLayer(datasource, null, {
+                    createIndicators: true,
+                    filter: ['any', ['==', ['geometry-type'], 'Point'], ['==', ['geometry-type'], 'MultiPoint']]
+                });
+
+                map.layers.add([
+                    new atlas.layer.LineLayer(datasource, null, {
+                        strokeColor: 'rgb(3, 204, 153)',
+                        strokeWidth: 5,
+                        filter: ['any', ['==', ['geometry-type'], 'LineString'], ['==', ['geometry-type'], 'MultiLineString']]
+                    }),
+                    waypointLayer
+                ]);
+
+                popup = new atlas.Popup();
+            });
+
+// #     calendar.on('dateClick', function(info) {
+// #     let eventTitle = prompt('Enter Event Title:');
+// #     let eventLocation = prompt('Enter Event Location:');
+// #     let eventTime = prompt('Enter Event Time (YYYY-MM-DDTHH:mm:ss):');
+
+// #     if (eventTitle && eventLocation && eventTime) {
+// #         // Add to calendar UI
+// #         calendar.addEvent({
+// #             title: eventTitle,
+// #             start: eventTime,
+// #             extendedProps: { location: eventLocation }
+// #         });
+
+// #         // Store in database
+// #         fetch('/add_event', {
+// #             method: 'POST',
+// #             headers: { 'Content-Type': 'application/json' },
+// #             body: JSON.stringify({ title: eventTitle, location: eventLocation, time: eventTime })
+// #         }).then(response => {
+// #             if (response.ok) alert('Event added successfully!');
+// #         }).catch(err => console.error('Database error:', err));
+// #     }
+// # });
+
+
+            // // Initialize FullCalendar
+            // calendar = new FullCalendar.Calendar(document.getElementById('calendar'), {
+            //     plugins: ['dayGrid'],
+            //     events: []
+            // });
+            // calendar.render();
+            
+        document.addEventListener('DOMContentLoaded', function () {
+        console.log("Document loaded, initializing event form listener.");
+
+        // Ensure eventForm is present in the document
+        const eventForm = document.getElementById('eventForm');
+        if (eventForm) {
+            // Event Form Submission with JavaScript
+            document.getElementById('eventForm').addEventListener('submit', async function (e) {
+                e.preventDefault(); // Prevent default form submission (reloading)
+                console.log("Event form submission intercepted.");
+
+                // Collect data from the form
+                const eventName = document.getElementById('eventName').value;
+                const eventTime = document.getElementById('eventTime').value;
+
+                // Simple validation
+                if (!eventName || !eventTime) {
+                    alert("Please fill out both event name and event time.");
+                    return;
+                }
+
+                // Create the data object to send
+                const data = {
+                    title: eventName,
+                    time: eventTime
+                };
+
+                try {
+                    console.log("Sending data to backend:", data);
+                    // Send data to the backend
+                    const response = await fetch('/add_event', {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json'
+                        },
+                        body: JSON.stringify(data)
+                    });
+
+                    // Parse the response
+                    const result = await response.json();
+
+                    if (response.ok) {
+                        // If successful, display the ETA message
+                        document.getElementById('etaMessage').innerText = `Event added successfully: "${data.title}" scheduled at ${data.time}`;
+                        console.log("Event added successfully.");
+                        alert(`Alert: Your event '${data.title}' has been scheduled. You will receive an alert one hour before.`);
+                    } else {
+                        // Display error message if the request fails
+                        console.error("Error response from server:", result);
+                        alert(result.error || 'Error adding event.');
+                    }
+
+                } catch (error) {
+                    console.error('Error while adding the event:', error);
+                    alert('An error occurred while adding the event.');
+                }
+            });
+        } else {
+            console.error("Could not find the eventForm element. Please make sure the form ID is correct.");
+        }
+    });
+ }
+
+    async function calculateRoute() {
+    datasource.clear();
+    document.getElementById('routeDetails').innerHTML = ''; // Clear existing route details
+    var start = document.getElementById('startTbx').value;
+    var end = document.getElementById('endTbx').value;
+    var deviationPoints = parseInt(document.getElementById('deviationPoints').value);
+
+    if (start == '' || end == '') {
+        alert('Invalid waypoint point specified.');
+        return;
+    }
+
+    var startLocation = await searchURL.searchAddress(aborter, start, { limit: 1, view: 'Auto' });
+    if (!startLocation || startLocation.results.length === 0) {
+        alert('Unable to geocode start waypoint.');
+        return;
+    }
+
+    var startPoint = [startLocation.results[0].position.lon, startLocation.results[0].position.lat];
+    var endLocation = await searchURL.searchAddress(aborter, end, { limit: 1, view: 'Auto' });
+    if (!endLocation || endLocation.results.length === 0) {
+        alert('Unable to geocode end waypoint.');
+        return;
+    }
+
+    var endPoint = [endLocation.results[0].position.lon, endLocation.results[0].position.lat];
+    var deviationValue = parseInt(document.getElementById('deviationPoints').value);
+
+    var routeResponse = await routeURL.calculateRouteDirections(aborter, [startPoint, endPoint], {
+        maxAlternatives: 4,
+        instructionsType: 'text',
+        traffic: true,
+        weather: true,
+    });
+
+    if (!routeResponse || routeResponse.routes.length === 0) {
+        alert('Unable to calculate route.');
+        return;
+    }
+
+    // Colors for each route
+    var routeColors = ['blue', 'orange', 'purple', 'red', 'green'];
+    var routeOptions = routeResponse.routes.slice(0, Math.min(deviationPoints, routeResponse.routes.length));
+
+    // Loop over each route
+    routeOptions.forEach((route, index) => {
+        var routeCoordinates = [];
+        for (var legIndex = 0; legIndex < route.legs.length; legIndex++) {
+            var leg = route.legs[legIndex];
+            var legCoordinates = leg.points.map(function (point) {
+                return [point.longitude, point.latitude];
+            });
+            routeCoordinates = routeCoordinates.concat(legCoordinates);
+        }
+
+        // Create the route line
+        var routeLine = new atlas.data.LineString(routeCoordinates);
+        datasource.add(new atlas.data.Feature(routeLine, {}, {
+            strokeColor: routeColors[index],
+            strokeWidth: 5
+        }));
+
+        // Calculate route distance and time
+        var routeDistance = (route.summary.lengthInMeters / 1000).toFixed(1) + ' km';
+        
+        // Convert time to hours and minutes
+        var totalMinutes = Math.floor(route.summary.travelTimeInSeconds / 60);
+        var hours = Math.floor(totalMinutes / 60);
+        var minutes = totalMinutes % 60;
+        var routeTime = hours > 0 ? `${hours} hr ${minutes} min` : `${minutes} min`;
+
+        // Add route details to the right-side panel
+        var routeRow = `<tr>
+            <td><span class="colorBox" style="background-color:${routeColors[index]}"></span> Route ${index + 1}</td>
+            <td>${routeDistance}</td>
+            <td>${routeTime}</td>
+        </tr>`;
+        document.getElementById('routeDetails').innerHTML += routeRow;
+    });
+
+    // Add start and end points
+    var startPointFeature = new atlas.data.Feature(new atlas.data.Point(startPoint));
+    var endPointFeature = new atlas.data.Feature(new atlas.data.Point(endPoint));
+    datasource.add([startPointFeature, endPointFeature]);
+
+    // ETA Comparison Logic
+    if (currentEvent) {
+        var travelTime = routeResponse.routes[0].summary.travelTimeInSeconds * 1000; // Convert seconds to ms
+        var arrivalTime = new Date(Date.now() + travelTime); // Calculate estimated arrival time
+
+        var etaMessage = (arrivalTime <= currentEvent) 
+            ? "You will arrive on time." 
+            : `You will be late. Estimated delay: ${(arrivalTime - currentEvent) / 60000} minutes.`;
+
+        document.getElementById('etaMessage').innerText = etaMessage;
+    }
+}
+
+
+        // Voice Recognition Placeholder
+        function startVoiceRecognition() {
+            var recognition = new (window.SpeechRecognition || window.webkitSpeechRecognition)();
+            recognition.lang = 'en-US';
+            recognition.interimResults = false;
+            recognition.maxAlternatives = 1;
+
+            recognition.onresult = function(event) {
+                var speechResult = event.results[0][0].transcript;
+                var isStart = !document.getElementById('startTbx').value;
+                if (isStart) {
+                    document.getElementById('startTbx').value = speechResult;
+                } else {
+                    document.getElementById('endTbx').value = speechResult;
+                }
+            };
+
+            recognition.onspeechend = function() {
+                recognition.stop();
+            };
+
+            recognition.onerror = function(event) {
+                console.error('Speech recognition error: ', event.error);
+            };
+
+            recognition.start();
+        }
+
+        
+    <!-- Azure Maps and FullCalendar Scripts -->
+
+    </script>
+
+
+</body>
+</html>
